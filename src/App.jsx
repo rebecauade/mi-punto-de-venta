@@ -1,14 +1,16 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, increment } from 'firebase/firestore';
+import { 
+  getFirestore, collection, doc, setDoc, getDoc, deleteDoc, onSnapshot, increment 
+} from 'firebase/firestore';
 import { 
   ShoppingCart, Package, Trash2, Edit2, LogOut, Users, Phone, 
-  Search, Eye, AlertCircle, FileText, Check, DollarSign, Smartphone, Ticket, Layers
+  Search, Eye, AlertCircle, FileText, Check, DollarSign, Smartphone, Ticket, Layers, UserCheck, UserX, Shield
 } from 'lucide-react';
 import { useRegisterSW } from 'virtual:pwa-register/react';
 
-// --- TUS LLAVES DE FIREBASE ---
+// --- CONFIGURACIÓN DE FIREBASE ---
 const firebaseConfig = {
   apiKey: "AIzaSyDKcKgDWd55WdBDTum1VDs5EWBNn13XS3g",
   authDomain: "taloapp-57a5b.firebaseapp.com",
@@ -25,29 +27,36 @@ const db = getFirestore(app);
 
 export default function App() {
   useRegisterSW({ immediate: true });
+
+  // Estados de Sesión y Perfil (SaaS Multi-Empresa)
   const [user, setUser] = useState(null);
+  const [userProfile, setUserProfile] = useState(null); // { empresaId, rol: 'admin'|'empleado', activo: boolean, name: string }
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
+
   const [activeTab, setActiveTab] = useState('pos');
   
+  // Login Form
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
 
-  // Datos
+  // Datos del Local
   const [products, setProducts] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [cart, setCart] = useState([]);
   const [sales, setSales] = useState([]);
   const [vales, setVales] = useState([]); 
+  const [teamMembers, setTeamMembers] = useState([]); // Lista de empleados para el dueño
+
   const [currentTicket, setCurrentTicket] = useState(null);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   
-  // Métodos de pago (Evolucionados a castellano puro para burlar al traductor)
-  const [paymentMethod, setPaymentMethod] = useState('efectivo'); // 'efectivo', 'virtual' o 'combinado'
+  // Métodos de Pago
+  const [paymentMethod, setPaymentMethod] = useState('efectivo');
   const [splitCash, setSplitCash] = useState(''); 
   const [splitDigital, setSplitDigital] = useState(''); 
 
-  // Filtros locales
+  // Filtros
   const [productSearchQuery, setProductSearchQuery] = useState(''); 
   const [customerSearchQuery, setCustomerSearchQuery] = useState(''); 
   const [selectedReportDate, setSelectedReportDate] = useState(new Date().toLocaleDateString('sv-SE'));
@@ -63,51 +72,113 @@ export default function App() {
   const [isValeModalOpen, setIsValeModalOpen] = useState(false); 
   const [valeForm, setValeForm] = useState({ customerName: '', vaciosDebidos: '', entregó: '', yaPago: false });
 
-  const [viewingCustomerHistory, setViewingCustomerHistory] = useState(null);
+  const [isTeamModalOpen, setIsTeamModalOpen] = useState(false);
+  const [teamForm, setTeamForm] = useState({ name: '', email: '', userId: '' });
 
-  // Estado local temporal para deudas
+  const [viewingCustomerHistory, setViewingCustomerHistory] = useState(null);
   const [editingDebts, setEditingDebts] = useState({});
 
+  // 1. CARGA DE AUTENTICACIÓN Y COMPROBACIÓN ON/OFF DE ACCESO
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (usr) => {
-      setUser(usr);
+    const unsub = onAuthStateChanged(auth, async (usr) => {
+      if (usr) {
+        try {
+          const userDocSnap = await getDoc(doc(db, 'users', usr.uid));
+          if (userDocSnap.exists()) {
+            const profileData = userDocSnap.data();
+
+            // CONTROL DE ACCESO ON / OFF
+            if (profileData.activo === false) {
+              await signOut(auth);
+              setUser(null);
+              setUserProfile(null);
+              setLoginError('Tu cuenta está inhabilitada. Consulta con el administrador de la empresa.');
+              setIsCheckingAuth(false);
+              return;
+            }
+
+            setUser(usr);
+            setUserProfile(profileData);
+          } else {
+            // Perfil por defecto en caso de migraciones
+            const defaultProfile = {
+              empresaId: usr.uid,
+              rol: 'admin',
+              activo: true,
+              name: usr.email ? usr.email.split('@')[0] : 'Admin'
+            };
+            setUser(usr);
+            setUserProfile(defaultProfile);
+          }
+        } catch (err) {
+          console.error("Error leyendo perfil del usuario:", err);
+        }
+      } else {
+        setUser(null);
+        setUserProfile(null);
+      }
       setIsCheckingAuth(false);
     });
     return () => unsub();
   }, []);
 
+  // 2. LECTURA DE LA BASE DE DATOS AISLADA POR EMPRESA (empresaId)
   useEffect(() => {
-    if (!user) return;
-    const unsubProds = onSnapshot(collection(db, 'users', user.uid, 'products'), snap => {
+    if (!user || !userProfile?.empresaId) return;
+
+    const empId = userProfile.empresaId;
+
+    // Productos del local
+    const unsubProds = onSnapshot(collection(db, 'empresas', empId, 'products'), snap => {
       const p = []; snap.forEach(d => p.push({ id: d.id, ...d.data() }));
       setProducts(p);
     });
-    const unsubCusts = onSnapshot(collection(db, 'users', user.uid, 'customers'), snap => {
+
+    // Clientes del local
+    const unsubCusts = onSnapshot(collection(db, 'empresas', empId, 'customers'), snap => {
       const c = []; snap.forEach(d => c.push({ id: d.id, ...d.data() }));
       setCustomers(c);
       
       const initialDebts = {};
       snap.forEach(d => {
-        const data = d.data();
-        initialDebts[d.id] = data.debtAmount || 0;
+        initialDebts[d.id] = d.data().debtAmount || 0;
       });
       setEditingDebts(initialDebts);
     });
-    const unsubSales = onSnapshot(collection(db, 'users', user.uid, 'sales'), snap => {
+
+    // Ventas del local
+    const unsubSales = onSnapshot(collection(db, 'empresas', empId, 'sales'), snap => {
       const s = []; snap.forEach(d => s.push({ id: d.id, ...d.data() }));
       s.sort((a,b) => b.timestamp - a.timestamp);
       setSales(s);
     });
-    const unsubVales = onSnapshot(collection(db, 'users', user.uid, 'vales'), snap => {
+
+    // Vales del local
+    const unsubVales = onSnapshot(collection(db, 'empresas', empId, 'vales'), snap => {
       const v = []; snap.forEach(d => v.push({ id: d.id, ...d.data() }));
       v.sort((a,b) => b.timestamp - a.timestamp);
       setVales(v);
     });
 
-    return () => { unsubProds(); unsubCusts(); unsubSales(); unsubVales(); };
-  }, [user]);
+    // Si el usuario es ADMIN, escucha la lista de empleados de la empresa
+    let unsubTeam = () => {};
+    if (userProfile.rol === 'admin') {
+      unsubTeam = onSnapshot(collection(db, 'users'), snap => {
+        const team = [];
+        snap.forEach(d => {
+          const u = d.data();
+          if (u.empresaId === empId && d.id !== user.uid) {
+            team.push({ id: d.id, ...u });
+          }
+        });
+        setTeamMembers(team);
+      });
+    }
 
-  // --- LÓGICAS DE FILTRADO ---
+    return () => { unsubProds(); unsubCusts(); unsubSales(); unsubVales(); unsubTeam(); };
+  }, [user, userProfile]);
+
+  // --- LÓGICA DE FILTROS Y TOTALES ---
   const filteredProducts = useMemo(() => {
     return products.filter(p => p.name.toLowerCase().includes(productSearchQuery.toLowerCase()));
   }, [products, productSearchQuery]);
@@ -144,7 +215,6 @@ export default function App() {
         calendarRevenue += s.total;
         calendarCount += 1;
         
-        // Compatibilidad con registros viejos y nuevos
         if (s.paymentMethod === 'digital' || s.paymentMethod === 'virtual') {
           calendarDigital += s.total;
         } else if (s.paymentMethod === 'combinado') {
@@ -157,15 +227,14 @@ export default function App() {
     });
 
     const isToday = selectedReportDate === todayLabel;
-
     return { calendarRevenue, calendarCash, calendarDigital, calendarCount, calendarSales, isToday };
   }, [sales, selectedReportDate]);
 
-  // --- ACCIONES ---
+  // --- ACCIONES GENERALES ---
   const handleLogin = (e) => {
     e.preventDefault();
     setLoginError('');
-    signInWithEmailAndPassword(auth, email, password).catch(() => setLoginError('Email o clave incorrectos.'));
+    signInWithEmailAndPassword(auth, email, password).catch(() => setLoginError('Email o contraseña incorrectos.'));
   };
 
   const addToCart = (p) => {
@@ -183,7 +252,8 @@ export default function App() {
   };
 
   const handleCheckout = async () => {
-    if (cart.length === 0 || !user || !isSplitTotalCorrect) return;
+    if (cart.length === 0 || !user || !userProfile?.empresaId || !isSplitTotalCorrect) return;
+    const empId = userProfile.empresaId;
     const saleId = Date.now().toString();
     const plainDate = new Date().toLocaleDateString('sv-SE');
 
@@ -194,14 +264,15 @@ export default function App() {
       items: cart.map(i => ({ name: i.product.name, qty: i.quantity, price: i.unitPrice })), 
       total: cartTotal,
       customerName: selectedCustomer ? selectedCustomer.name : 'Cliente General',
-      paymentMethod: paymentMethod === 'digital' ? 'virtual' : paymentMethod, // Forzamos palabra en español
+      paymentMethod: paymentMethod === 'digital' ? 'virtual' : paymentMethod,
       splitCash: paymentMethod === 'combinado' ? Number(splitCash || 0) : 0,
-      splitDigital: paymentMethod === 'combinado' ? Number(splitDigital || 0) : 0
+      splitDigital: paymentMethod === 'combinado' ? Number(splitDigital || 0) : 0,
+      vendedor: userProfile.name || user.email
     };
 
-    await setDoc(doc(db, 'users', user.uid, 'sales', saleId), newSale);
+    await setDoc(doc(db, 'empresas', empId, 'sales', saleId), newSale);
     for (const item of cart) {
-      await setDoc(doc(db, 'users', user.uid, 'products', item.product.id), { stock: increment(-item.quantity) }, { merge: true });
+      await setDoc(doc(db, 'empresas', empId, 'products', item.product.id), { stock: increment(-item.quantity) }, { merge: true });
     }
     setCurrentTicket({ id: saleId, ...newSale });
     setCart([]); 
@@ -212,12 +283,22 @@ export default function App() {
   };
 
   const saveDirectDebt = async (customerId, currentAmount) => {
+    if (!userProfile?.empresaId) return;
     const montoNum = Number(currentAmount || 0);
-    await setDoc(doc(db, 'users', user.uid, 'customers', customerId), {
+    await setDoc(doc(db, 'empresas', userProfile.empresaId, 'customers', customerId), {
       hasDebt: montoNum > 0,
       debtAmount: montoNum
     }, { merge: true });
     alert("¡Deuda actualizada correctamente!");
+  };
+
+  // CAMBIO ON/OFF DE ESTADO DE EMPLEADO POR EL DUEÑO
+  const toggleEmployeeStatus = async (employeeId, currentStatus) => {
+    try {
+      await setDoc(doc(db, 'users', employeeId), { activo: !currentStatus }, { merge: true });
+    } catch (err) {
+      alert("Error al actualizar el estado del empleado.");
+    }
   };
 
   const handleWhatsApp = (ticket) => {
@@ -237,36 +318,49 @@ export default function App() {
   if (isCheckingAuth) return <div className="h-screen flex items-center justify-center bg-white text-violet-600 font-black">TALOAPP...</div>;
 
   if (!user) return (
-    <div className="h-screen flex items-center justify-center bg-slate-100">
+    <div className="h-screen flex items-center justify-center bg-slate-100 p-4">
       <form onSubmit={handleLogin} className="bg-white p-10 rounded-[40px] shadow-2xl w-full max-w-sm text-center border border-slate-200">
-        <h1 className="text-4xl font-black text-violet-600 mb-6">taloapp</h1>
-        <input type="email" placeholder="Email" required className="w-full p-4 mb-3 rounded-2xl border border-slate-300 outline-none" value={email} onChange={e => setEmail(e.target.value)} />
-        <input type="password" placeholder="Contraseña" required className="w-full p-4 mb-6 rounded-2xl border border-slate-300 outline-none" value={password} onChange={e => setPassword(e.target.value)} />
-        {loginError && <p className="text-rose-500 mb-4 font-bold">{loginError}</p>}
-        <button type="submit" className="w-full bg-violet-600 text-white font-black py-4 rounded-2xl shadow-lg">ENTRAR</button>
+        <h1 className="text-4xl font-black text-violet-600 mb-2">taloapp</h1>
+        <p className="text-xs font-bold text-slate-400 mb-6">Punto de Venta para Comercios</p>
+        <input type="email" placeholder="Correo electrónico" required className="w-full p-4 mb-3 rounded-2xl border border-slate-300 outline-none font-bold" value={email} onChange={e => setEmail(e.target.value)} />
+        <input type="password" placeholder="Contraseña" required className="w-full p-4 mb-6 rounded-2xl border border-slate-300 outline-none font-bold" value={password} onChange={e => setPassword(e.target.value)} />
+        {loginError && <p className="text-rose-500 mb-4 text-xs font-bold">{loginError}</p>}
+        <button type="submit" className="w-full bg-violet-600 text-white font-black py-4 rounded-2xl shadow-lg hover:bg-violet-700 transition-all">INGRESAR AL LOCAL</button>
       </form>
     </div>
   );
 
+  const isAdmin = userProfile?.rol === 'admin';
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      {/* MENU NAVEGACION */}
+      {/* MENÚ NAVEGACIÓN */}
       <nav className="border-b p-3 flex justify-between items-center sticky top-0 z-30 bg-white shadow-sm">
         <div className="flex gap-1 overflow-x-auto">
           <button onClick={() => setActiveTab('pos')} className={`px-4 py-2 rounded-xl font-bold flex items-center gap-2 ${activeTab === 'pos' ? 'bg-violet-600 text-white shadow-md' : 'text-slate-600'}`}><ShoppingCart size={18}/> Venta</button>
           <button onClick={() => setActiveTab('products')} className={`px-4 py-2 rounded-xl font-bold flex items-center gap-2 ${activeTab === 'products' ? 'bg-violet-600 text-white shadow-md' : 'text-slate-600'}`}><Package size={18}/> Stock</button>
           <button onClick={() => setActiveTab('customers')} className={`px-4 py-2 rounded-xl font-bold flex items-center gap-2 ${activeTab === 'customers' ? 'bg-violet-600 text-white shadow-md' : 'text-slate-600'}`}><Users size={18}/> Clientes</button>
           <button onClick={() => setActiveTab('vales')} className={`px-4 py-2 rounded-xl font-bold flex items-center gap-2 ${activeTab === 'vales' ? 'bg-violet-600 text-white shadow-md' : 'text-slate-600'}`}><Ticket size={18}/> Vales</button>
-          <button onClick={() => setActiveTab('reports')} className={`px-4 py-2 rounded-xl font-bold flex items-center gap-2 ${activeTab === 'reports' ? 'bg-violet-600 text-white shadow-md' : 'text-slate-600'}`}><FileText size={18}/> Informe de ventas</button>
+          
+          {/* PESTAÑAS EXCLUSIVAS DEL ADMINISTRADOR / DUEÑO */}
+          {isAdmin && (
+            <>
+              <button onClick={() => setActiveTab('reports')} className={`px-4 py-2 rounded-xl font-bold flex items-center gap-2 ${activeTab === 'reports' ? 'bg-violet-600 text-white shadow-md' : 'text-slate-600'}`}><FileText size={18}/> Informes</button>
+              <button onClick={() => setActiveTab('team')} className={`px-4 py-2 rounded-xl font-bold flex items-center gap-2 ${activeTab === 'team' ? 'bg-violet-600 text-white shadow-md' : 'text-slate-600'}`}><Shield size={18}/> Mi Equipo</button>
+            </>
+          )}
         </div>
-        <button onClick={() => signOut(auth)} className="text-rose-500 p-2"><LogOut /></button>
+        
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-black text-slate-400 hidden sm:inline">{userProfile?.name || user.email} ({userProfile?.rol?.toUpperCase()})</span>
+          <button onClick={() => signOut(auth)} className="text-rose-500 p-2 hover:bg-rose-50 rounded-xl" title="Cerrar Sesión"><LogOut /></button>
+        </div>
       </nav>
 
       <main className="p-4 max-w-7xl mx-auto">
         {/* PESTAÑA VENTA */}
         {activeTab === 'pos' && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-            {/* SECTOR PRODUCTOS */}
             <div className="lg:col-span-8 space-y-4">
               <div className="relative w-full">
                 <Search className="absolute left-4 top-3.5 text-slate-500" size={18} />
@@ -371,7 +465,9 @@ export default function App() {
                   </div>
                   <div className="flex gap-2">
                     <button onClick={() => {setEditingProduct(p); setProductForm({name:p.name, price:p.price, stock:p.stock}); setIsProductModalOpen(true);}} className="p-3 text-violet-600 bg-violet-50 rounded-2xl"><Edit2 size={18}/></button>
-                    <button onClick={() => deleteDoc(doc(db, 'users', user.uid, 'products', p.id))} className="p-3 text-rose-500 hover:bg-rose-50 rounded-2xl"><Trash2 size={18}/></button>
+                    {isAdmin && (
+                      <button onClick={() => deleteDoc(doc(db, 'empresas', userProfile.empresaId, 'products', p.id))} className="p-3 text-rose-500 hover:bg-rose-50 rounded-2xl"><Trash2 size={18}/></button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -424,7 +520,9 @@ export default function App() {
 
                     <div className="flex gap-2 self-end md:self-center">
                       <button onClick={() => setViewingCustomerHistory(c)} className="px-4 py-2 text-violet-600 bg-violet-50 font-black rounded-xl text-xs flex items-center gap-2"><Eye size={14}/> HISTORIAL</button>
-                      <button onClick={() => deleteDoc(doc(db, 'users', user.uid, 'customers', c.id))} className="p-2 text-rose-500 hover:bg-rose-50 rounded-xl"><Trash2 size={16}/></button>
+                      {isAdmin && (
+                        <button onClick={() => deleteDoc(doc(db, 'empresas', userProfile.empresaId, 'customers', c.id))} className="p-2 text-rose-500 hover:bg-rose-50 rounded-xl"><Trash2 size={16}/></button>
+                      )}
                     </div>
                   </div>
                 );
@@ -458,16 +556,19 @@ export default function App() {
                     </div>
                     <p className="text-[10px] text-slate-400 mt-2 font-bold">Fecha: {v.date || 'Reciente'}</p>
                   </div>
-                  <button onClick={() => deleteDoc(doc(db, 'users', user.uid, 'vales', v.id))} className="p-3 text-rose-500 hover:bg-rose-50 rounded-2xl">
-                    <Trash2 size={18}/></button>
+                  {isAdmin && (
+                    <button onClick={() => deleteDoc(doc(db, 'empresas', userProfile.empresaId, 'vales', v.id))} className="p-3 text-rose-500 hover:bg-rose-50 rounded-2xl">
+                      <Trash2 size={18}/>
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
           </div>
         )}
 
-        {/* PESTAÑA INFORME DE VENTAS (MUESTRA EL REPARTO DEL COMBINADO EN VIVO) */}
-        {activeTab === 'reports' && (
+        {/* PESTAÑA INFORMES DE VENTAS (EXCLUSIVA DUEÑO/ADMIN) */}
+        {activeTab === 'reports' && isAdmin && (
           <div className="max-w-5xl mx-auto space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="p-6 bg-slate-900 text-white rounded-[32px] shadow-lg relative overflow-hidden">
@@ -491,7 +592,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* SECTOR CALENDARIO */}
             <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b pb-4">
                 <div className="flex items-center gap-2">
@@ -529,6 +629,51 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* PESTAÑA MI EQUIPO (EXCLUSIVA DUEÑO/ADMIN CON CONTROL INTERRUPTOR ON/OFF) */}
+        {activeTab === 'team' && isAdmin && (
+          <div className="max-w-4xl mx-auto space-y-4 pt-4">
+            <div className="flex justify-between items-center mb-4">
+              <div>
+                <h2 className="text-2xl font-black text-slate-800">Personal del Local</h2>
+                <p className="text-xs text-slate-400 font-bold">Gestioná los accesos de tus empleados a la app</p>
+              </div>
+            </div>
+
+            <div className="grid gap-3">
+              {teamMembers.map(member => (
+                <div key={member.id} className="p-6 rounded-3xl border border-slate-200 bg-white flex justify-between items-center shadow-sm">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <p className="font-black text-xl text-slate-800">{member.name || member.email}</p>
+                      <span className={`text-[10px] font-black px-2 py-0.5 rounded-md ${member.activo ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                        {member.activo ? 'ACTIVO' : 'INHABILITADO'}
+                      </span>
+                    </div>
+                    <p className="text-slate-400 font-bold text-xs">{member.email}</p>
+                  </div>
+
+                  {/* INTERRUPTOR DE ESTADO ON / OFF */}
+                  <button 
+                    onClick={() => toggleEmployeeStatus(member.id, member.activo)}
+                    className={`px-4 py-2 rounded-2xl font-black text-xs flex items-center gap-2 transition-all ${member.activo ? 'bg-rose-50 text-rose-600 hover:bg-rose-100' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'}`}
+                  >
+                    {member.activo ? (
+                      <><UserX size={16}/> DESACTIVAR</>
+                    ) : (
+                      <><UserCheck size={16}/> ACTIVAR ACCESO</>
+                    )}
+                  </button>
+                </div>
+              ))}
+              {teamMembers.length === 0 && (
+                <div className="text-center p-12 bg-white rounded-3xl border text-slate-400 font-bold">
+                  No hay otros empleados registrados para esta empresa todavía.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </main>
 
       {/* MODAL NUEVO PRODUCTO */}
@@ -536,15 +681,21 @@ export default function App() {
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <form onSubmit={async (e) => {
             e.preventDefault();
-            const id = editingProduct ? editingProduct.id : Date.now().toString();
-            await setDoc(doc(db, 'users', user.uid, 'products', id), { 
-              name: productForm.name, 
-              price: Number(productForm.price), 
-              stock: Number(productForm.stock) 
-            });
-            setIsProductModalOpen(false);
+            try {
+              const productId = editingProduct?.id ? String(editingProduct.id) : String(Date.now());
+              await setDoc(doc(db, 'empresas', userProfile.empresaId, 'products', productId), { 
+                name: productForm.name.trim(), 
+                price: Number(productForm.price || 0), 
+                stock: Number(productForm.stock || 0) 
+              });
+              setProductForm({ name: '', price: '', stock: '' });
+              setEditingProduct(null);
+              setIsProductModalOpen(false);
+            } catch (err) {
+              alert("Error al guardar producto: " + err.message);
+            }
           }} className="bg-white p-8 rounded-[40px] w-full max-w-sm space-y-4 shadow-2xl border border-slate-100">
-            <h2 className="text-2xl font-black text-slate-800 italic">{editingProduct ? 'Modificar Producto / Cantidad' : 'Nuevo Producto'}</h2>
+            <h2 className="text-2xl font-black text-slate-800 italic">{editingProduct ? 'Modificar Producto' : 'Nuevo Producto'}</h2>
             <input required placeholder="Nombre del producto" className="w-full p-4 rounded-2xl border border-slate-200 font-bold outline-none" value={productForm.name} onChange={e => setProductForm({...productForm, name: e.target.value})} />
             <div className="grid grid-cols-2 gap-4">
               <input required type="number" placeholder="Precio $" className="w-full p-4 rounded-2xl border border-slate-200 font-bold outline-none" value={productForm.price} onChange={e => setProductForm({...productForm, price: e.target.value})} />
@@ -562,7 +713,7 @@ export default function App() {
           <form onSubmit={async (e) => {
             e.preventDefault();
             const id = Date.now().toString();
-            await setDoc(doc(db, 'users', user.uid, 'vales', id), {
+            await setDoc(doc(db, 'empresas', userProfile.empresaId, 'vales', id), {
               customerName: valeForm.customerName,
               vaciosDebidos: Number(valeForm.vaciosDebidos || 0),
               entregó: Number(valeForm.entregó || 0),
@@ -596,7 +747,7 @@ export default function App() {
             <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200">
               <label className="flex items-center gap-2 cursor-pointer font-bold text-sm text-slate-700">
                 <input type="checkbox" checked={valeForm.yaPago} onChange={e => setValeForm({...valeForm, yaPago: e.target.checked})} className="size-4 accent-violet-600" />
-                <span>¿Este vale ya fue saldado / pagado?</span>
+                <span>¿Este vale ya fue saldado?</span>
               </label>
             </div>
 
@@ -611,14 +762,19 @@ export default function App() {
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <form onSubmit={async (e) => {
             e.preventDefault();
-            const id = Date.now().toString();
-            await setDoc(doc(db, 'users', user.uid, 'customers', id), { 
-              name: customerForm.name, 
-              phone: customerForm.phone,
-              hasDebt: customerForm.hasDebt,
-              debtAmount: customerForm.hasDebt ? Number(customerForm.debtAmount) : 0
-            });
-            setIsCustomerModalOpen(false);
+            try {
+              const id = Date.now().toString();
+              await setDoc(doc(db, 'empresas', userProfile.empresaId, 'customers', id), { 
+                name: customerForm.name.trim(), 
+                phone: customerForm.phone || '',
+                hasDebt: customerForm.hasDebt,
+                debtAmount: customerForm.hasDebt ? Number(customerForm.debtAmount) : 0
+              });
+              setCustomerForm({ name: '', phone: '', hasDebt: false, debtAmount: '' });
+              setIsCustomerModalOpen(false);
+            } catch (err) {
+              alert("Error al guardar cliente: " + err.message);
+            }
           }} className="bg-white p-8 rounded-[40px] w-full max-w-sm space-y-4 shadow-2xl border border-slate-100">
             <h2 className="text-2xl font-black text-slate-800 italic">Registrar Cliente</h2>
             <input required type="text" placeholder="Nombre completo" className="w-full p-4 rounded-2xl border border-slate-200 font-bold outline-none" value={customerForm.name} onChange={e => setCustomerForm({...customerForm, name: e.target.value})} />
