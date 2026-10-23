@@ -1,6 +1,12 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import { 
+  getAuth, 
+  onAuthStateChanged, 
+  signInWithEmailAndPassword, 
+  signOut, 
+  createUserWithEmailAndPassword 
+} from 'firebase/auth';
 import { 
   getFirestore, collection, doc, setDoc, getDoc, deleteDoc, onSnapshot, increment 
 } from 'firebase/firestore';
@@ -46,7 +52,7 @@ export default function App() {
   const [cart, setCart] = useState([]);
   const [sales, setSales] = useState([]);
   const [vales, setVales] = useState([]); 
-  const [teamMembers, setTeamMembers] = useState([]); // Lista de empleados para el dueño
+  const [teamMembers, setTeamMembers] = useState([]); // Lista de empleados
 
   const [currentTicket, setCurrentTicket] = useState(null);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
@@ -73,7 +79,7 @@ export default function App() {
   const [valeForm, setValeForm] = useState({ customerName: '', vaciosDebidos: '', entregó: '', yaPago: false });
 
   const [isTeamModalOpen, setIsTeamModalOpen] = useState(false);
-  const [teamForm, setTeamForm] = useState({ name: '', email: '', userId: '' });
+  const [teamForm, setTeamForm] = useState({ name: '', email: '', password: '' });
 
   const [viewingCustomerHistory, setViewingCustomerHistory] = useState(null);
   const [editingDebts, setEditingDebts] = useState({});
@@ -100,7 +106,7 @@ export default function App() {
             setUser(usr);
             setUserProfile(profileData);
           } else {
-            // Perfil por defecto en caso de migraciones
+            // Perfil por defecto en caso de migración inicial
             const defaultProfile = {
               empresaId: usr.uid,
               rol: 'admin',
@@ -160,7 +166,7 @@ export default function App() {
       setVales(v);
     });
 
-    // Si el usuario es ADMIN, escucha la lista de empleados de la empresa
+    // Si el usuario es ADMIN, escucha la lista de empleados de su empresa
     let unsubTeam = () => {};
     if (userProfile.rol === 'admin') {
       unsubTeam = onSnapshot(collection(db, 'users'), snap => {
@@ -638,6 +644,12 @@ export default function App() {
                 <h2 className="text-2xl font-black text-slate-800">Personal del Local</h2>
                 <p className="text-xs text-slate-400 font-bold">Gestioná los accesos de tus empleados a la app</p>
               </div>
+              <button 
+                onClick={() => { setTeamForm({ name: '', email: '', password: '' }); setIsTeamModalOpen(true); }} 
+                className="bg-violet-600 text-white px-6 py-3 rounded-2xl font-black shadow-lg"
+              >
+                + NUEVO EMPLEADO
+              </button>
             </div>
 
             <div className="grid gap-3">
@@ -653,7 +665,7 @@ export default function App() {
                     <p className="text-slate-400 font-bold text-xs">{member.email}</p>
                   </div>
 
-                  {/* INTERRUPTOR DE ESTADO ON / OFF */}
+                  {/* INTERRUPTOR ON / OFF */}
                   <button 
                     onClick={() => toggleEmployeeStatus(member.id, member.activo)}
                     className={`px-4 py-2 rounded-2xl font-black text-xs flex items-center gap-2 transition-all ${member.activo ? 'bg-rose-50 text-rose-600 hover:bg-rose-100' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'}`}
@@ -790,6 +802,46 @@ export default function App() {
             </div>
             <button type="submit" className="w-full bg-violet-600 text-white py-5 rounded-2xl font-black shadow-xl">GUARDAR DATOS</button>
             <button type="button" onClick={() => setIsCustomerModalOpen(false)} className="w-full py-2 font-bold text-slate-400">Cerrar</button>
+          </form>
+        </div>
+      )}
+
+      {/* MODAL NUEVO EMPLEADO */}
+      {isTeamModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <form onSubmit={async (e) => {
+            e.preventDefault();
+            try {
+              // Instancia de Auth secundaria para no desloguear al dueño actual
+              const tempApp = initializeApp(firebaseConfig, "SecondaryAuthApp");
+              const tempAuth = getAuth(tempApp);
+              
+              const res = await createUserWithEmailAndPassword(tempAuth, teamForm.email.trim(), teamForm.password);
+              const newUid = res.user.uid;
+
+              // Guardamos su perfil asociado a la empresaId del dueño logueado
+              await setDoc(doc(db, 'users', newUid), {
+                name: teamForm.name.trim(),
+                email: teamForm.email.trim(),
+                empresaId: userProfile.empresaId,
+                rol: 'empleado',
+                activo: true
+              });
+
+              setIsTeamModalOpen(false);
+              setTeamForm({ name: '', email: '', password: '' });
+              alert("¡Empleado registrado con éxito!");
+            } catch (err) {
+              alert("Error al registrar empleado: " + err.message);
+            }
+          }} className="bg-white p-8 rounded-[40px] w-full max-w-sm space-y-4 shadow-2xl border border-slate-100">
+            <h2 className="text-2xl font-black text-slate-800 italic">Nuevo Empleado</h2>
+            <input required type="text" placeholder="Nombre completo" className="w-full p-4 rounded-2xl border border-slate-200 font-bold outline-none" value={teamForm.name} onChange={e => setTeamForm({...teamForm, name: e.target.value})} />
+            <input required type="email" placeholder="Correo electrónico" className="w-full p-4 rounded-2xl border border-slate-200 font-bold outline-none" value={teamForm.email} onChange={e => setTeamForm({...teamForm, email: e.target.value})} />
+            <input required type="password" placeholder="Contraseña de acceso" className="w-full p-4 rounded-2xl border border-slate-200 font-bold outline-none" value={teamForm.password} onChange={e => setTeamForm({...teamForm, password: e.target.value})} />
+            
+            <button type="submit" className="w-full bg-violet-600 text-white py-5 rounded-2xl font-black shadow-xl">CREAR EMPLEADO</button>
+            <button type="button" onClick={() => setIsTeamModalOpen(false)} className="w-full py-2 font-bold text-slate-400">Cancelar</button>
           </form>
         </div>
       )}
