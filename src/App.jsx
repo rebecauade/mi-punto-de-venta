@@ -12,7 +12,7 @@ import {
 } from 'firebase/firestore';
 import { 
   ShoppingCart, Package, Trash2, Edit2, LogOut, Users, Phone, 
-  Search, Eye, AlertCircle, FileText, Check, DollarSign, Smartphone, Ticket, Layers, UserCheck, UserX, Shield
+  Search, Eye, AlertCircle, FileText, Check, DollarSign, Smartphone, Ticket, Layers, UserCheck, UserX, Shield, Mic, MicOff
 } from 'lucide-react';
 import { useRegisterSW } from 'virtual:pwa-register/react';
 
@@ -34,9 +34,9 @@ const db = getFirestore(app);
 export default function App() {
   useRegisterSW({ immediate: true });
 
-  // Estados de Sesión y Perfil (SaaS Multi-Empresa)
+  // Estados de Sesión y Perfil
   const [user, setUser] = useState(null);
-  const [userProfile, setUserProfile] = useState(null); // { empresaId, rol: 'admin'|'empleado', activo: boolean, name: string }
+  const [userProfile, setUserProfile] = useState(null); 
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
 
   const [activeTab, setActiveTab] = useState('pos');
@@ -52,7 +52,7 @@ export default function App() {
   const [cart, setCart] = useState([]);
   const [sales, setSales] = useState([]);
   const [vales, setVales] = useState([]); 
-  const [teamMembers, setTeamMembers] = useState([]); // Lista de empleados
+  const [teamMembers, setTeamMembers] = useState([]); 
 
   const [currentTicket, setCurrentTicket] = useState(null);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
@@ -84,6 +84,10 @@ export default function App() {
   const [viewingCustomerHistory, setViewingCustomerHistory] = useState(null);
   const [editingDebts, setEditingDebts] = useState({});
 
+  // ESTADOS DE CONTROL DE VOZ
+  const [isListening, setIsListening] = useState(false);
+  const [voiceTranscript, setVoiceTranscript] = useState('');
+
   // 1. CARGA DE AUTENTICACIÓN Y COMPROBACIÓN ON/OFF DE ACCESO
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (usr) => {
@@ -93,12 +97,11 @@ export default function App() {
           if (userDocSnap.exists()) {
             const profileData = userDocSnap.data();
 
-            // CONTROL DE ACCESO ON / OFF
             if (profileData.activo === false) {
               await signOut(auth);
               setUser(null);
               setUserProfile(null);
-              setLoginError('Tu cuenta está inhabilitada. Consulta con el administrador de la empresa.');
+              setLoginError('Tu cuenta está inhabilitada. Consulta con el administrador.');
               setIsCheckingAuth(false);
               return;
             }
@@ -106,7 +109,6 @@ export default function App() {
             setUser(usr);
             setUserProfile(profileData);
           } else {
-            // Perfil por defecto en caso de migración inicial
             const defaultProfile = {
               empresaId: usr.uid,
               rol: 'admin',
@@ -128,45 +130,37 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  // 2. LECTURA DE LA BASE DE DATOS AISLADA POR EMPRESA (empresaId)
+  // 2. LECTURA DE LA BASE DE DATOS AISLADA POR EMPRESA
   useEffect(() => {
     if (!user || !userProfile?.empresaId) return;
 
     const empId = userProfile.empresaId;
 
-    // Productos del local
     const unsubProds = onSnapshot(collection(db, 'empresas', empId, 'products'), snap => {
       const p = []; snap.forEach(d => p.push({ id: d.id, ...d.data() }));
       setProducts(p);
     });
 
-    // Clientes del local
     const unsubCusts = onSnapshot(collection(db, 'empresas', empId, 'customers'), snap => {
       const c = []; snap.forEach(d => c.push({ id: d.id, ...d.data() }));
       setCustomers(c);
-      
       const initialDebts = {};
-      snap.forEach(d => {
-        initialDebts[d.id] = d.data().debtAmount || 0;
-      });
+      snap.forEach(d => initialDebts[d.id] = d.data().debtAmount || 0);
       setEditingDebts(initialDebts);
     });
 
-    // Ventas del local
     const unsubSales = onSnapshot(collection(db, 'empresas', empId, 'sales'), snap => {
       const s = []; snap.forEach(d => s.push({ id: d.id, ...d.data() }));
       s.sort((a,b) => b.timestamp - a.timestamp);
       setSales(s);
     });
 
-    // Vales del local
     const unsubVales = onSnapshot(collection(db, 'empresas', empId, 'vales'), snap => {
       const v = []; snap.forEach(d => v.push({ id: d.id, ...d.data() }));
       v.sort((a,b) => b.timestamp - a.timestamp);
       setVales(v);
     });
 
-    // Si el usuario es ADMIN, escucha la lista de empleados de su empresa
     let unsubTeam = () => {};
     if (userProfile.rol === 'admin') {
       unsubTeam = onSnapshot(collection(db, 'users'), snap => {
@@ -206,34 +200,24 @@ export default function App() {
 
   const reportStats = useMemo(() => {
     const todayLabel = new Date().toLocaleDateString('sv-SE');
-
-    let calendarRevenue = 0;
-    let calendarCash = 0;
-    let calendarDigital = 0;
-    let calendarCount = 0;
+    let calendarRevenue = 0, calendarCash = 0, calendarDigital = 0, calendarCount = 0;
     const calendarSales = [];
 
     sales.forEach(s => {
       const saleDateLabel = s.plainDate || new Date(s.timestamp || Date.now()).toLocaleDateString('sv-SE');
-
       if (saleDateLabel === selectedReportDate) {
         calendarSales.push(s);
         calendarRevenue += s.total;
         calendarCount += 1;
-        
-        if (s.paymentMethod === 'digital' || s.paymentMethod === 'virtual') {
-          calendarDigital += s.total;
-        } else if (s.paymentMethod === 'combinado') {
+        if (s.paymentMethod === 'digital' || s.paymentMethod === 'virtual') calendarDigital += s.total;
+        else if (s.paymentMethod === 'combinado') {
           calendarCash += Number(s.splitCash || 0);
           calendarDigital += Number(s.splitDigital || 0);
-        } else {
-          calendarCash += s.total;
-        }
+        } else calendarCash += s.total;
       }
     });
 
-    const isToday = selectedReportDate === todayLabel;
-    return { calendarRevenue, calendarCash, calendarDigital, calendarCount, calendarSales, isToday };
+    return { calendarRevenue, calendarCash, calendarDigital, calendarCount, calendarSales, isToday: selectedReportDate === todayLabel };
   }, [sales, selectedReportDate]);
 
   // --- ACCIONES GENERALES ---
@@ -243,10 +227,14 @@ export default function App() {
     signInWithEmailAndPassword(auth, email, password).catch(() => setLoginError('Email o contraseña incorrectos.'));
   };
 
-  const addToCart = (p) => {
-    const existing = cart.find(item => item.product.id === p.id);
-    if (existing) setCart(cart.map(item => item.product.id === p.id ? { ...item, quantity: item.quantity + 1 } : item));
-    else setCart([...cart, { product: p, quantity: 1, unitPrice: p.price }]);
+  const addToCart = (p, qty = 1) => {
+    setCart(prevCart => {
+      const existing = prevCart.find(item => item.product.id === p.id);
+      if (existing) {
+        return prevCart.map(item => item.product.id === p.id ? { ...item, quantity: item.quantity + qty } : item);
+      }
+      return [...prevCart, { product: p, quantity: qty, unitPrice: p.price }];
+    });
   };
 
   const updateCartPrice = (id, newPrice) => {
@@ -298,13 +286,100 @@ export default function App() {
     alert("¡Deuda actualizada correctamente!");
   };
 
-  // CAMBIO ON/OFF DE ESTADO DE EMPLEADO POR EL DUEÑO
   const toggleEmployeeStatus = async (employeeId, currentStatus) => {
     try {
       await setDoc(doc(db, 'users', employeeId), { activo: !currentStatus }, { merge: true });
     } catch (err) {
       alert("Error al actualizar el estado del empleado.");
     }
+  };
+
+  // --- MOTOR DE PROCESAMIENTO DE COMANDOS DE VOZ ---
+  const processVoiceCommand = (text) => {
+    const cleanText = text.toLowerCase().trim();
+    setVoiceTranscript(cleanText);
+
+    // 1. Comando: Vaciar ticket / carrito
+    if (cleanText.includes('vaciar') || cleanText.includes('limpiar') || cleanText.includes('borrar ticket')) {
+      setCart([]);
+      return;
+    }
+
+    // 2. Comandos de Navegación
+    if (cleanText.includes('ir a stock') || cleanText.includes('ver productos')) {
+      setActiveTab('products');
+      return;
+    }
+    if (cleanText.includes('ir a venta') || cleanText.includes('ver venta')) {
+      setActiveTab('pos');
+      return;
+    }
+    if (cleanText.includes('ir a clientes') || cleanText.includes('ver clientes')) {
+      setActiveTab('customers');
+      return;
+    }
+
+    // 3. Comando: Agregar productos (Ej: "agregar 2 coca cola" o "dos empanadas")
+    let detectedQty = 1;
+
+    // Detectar números hablados simples
+    if (cleanText.includes(' dos ') || cleanText.startsWith('dos ')) detectedQty = 2;
+    else if (cleanText.includes(' tres ') || cleanText.startsWith('tres ')) detectedQty = 3;
+    else if (cleanText.includes(' cuatro ') || cleanText.startsWith('cuatro ')) detectedQty = 4;
+    else if (cleanText.includes(' cinco ') || cleanText.startsWith('cinco ')) detectedQty = 5;
+    else {
+      const matchNumber = cleanText.match(/\d+/);
+      if (matchNumber) detectedQty = parseInt(matchNumber[0], 10);
+    }
+
+    // Buscar el producto en la lista por nombre
+    const matchedProduct = products.find(p => cleanText.includes(p.name.toLowerCase()));
+
+    if (matchedProduct) {
+      addToCart(matchedProduct, detectedQty);
+    }
+  };
+
+  // ACTIVAR ESCUCHA POR MICRÓFONO
+  const toggleVoiceRecognition = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      alert("Tu navegador no soporta el reconocimiento de voz. Probá usar Google Chrome.");
+      return;
+    }
+
+    if (isListening) {
+      setIsListening(false);
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'es-AR'; // Español Argentina
+    recognition.continuous = false;
+    recognition.interimResults = false;
+
+    recognition.onstart = () => {
+      setIsListening(true);
+      setVoiceTranscript('Escuchando orden...');
+    };
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      processVoiceCommand(transcript);
+    };
+
+    recognition.onerror = (event) => {
+      console.error("Error de voz:", event.error);
+      setIsListening(false);
+      setVoiceTranscript('No te entendí, probá de nuevo.');
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+
+    recognition.start();
   };
 
   const handleWhatsApp = (ticket) => {
@@ -339,7 +414,7 @@ export default function App() {
   const isAdmin = userProfile?.rol === 'admin';
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
+    <div className="min-h-screen bg-slate-50 text-slate-900 pb-20">
       {/* MENÚ NAVEGACIÓN */}
       <nav className="border-b p-3 flex justify-between items-center sticky top-0 z-30 bg-white shadow-sm">
         <div className="flex gap-1 overflow-x-auto">
@@ -348,7 +423,6 @@ export default function App() {
           <button onClick={() => setActiveTab('customers')} className={`px-4 py-2 rounded-xl font-bold flex items-center gap-2 ${activeTab === 'customers' ? 'bg-violet-600 text-white shadow-md' : 'text-slate-600'}`}><Users size={18}/> Clientes</button>
           <button onClick={() => setActiveTab('vales')} className={`px-4 py-2 rounded-xl font-bold flex items-center gap-2 ${activeTab === 'vales' ? 'bg-violet-600 text-white shadow-md' : 'text-slate-600'}`}><Ticket size={18}/> Vales</button>
           
-          {/* PESTAÑAS EXCLUSIVAS DEL ADMINISTRADOR / DUEÑO */}
           {isAdmin && (
             <>
               <button onClick={() => setActiveTab('reports')} className={`px-4 py-2 rounded-xl font-bold flex items-center gap-2 ${activeTab === 'reports' ? 'bg-violet-600 text-white shadow-md' : 'text-slate-600'}`}><FileText size={18}/> Informes</button>
@@ -368,6 +442,24 @@ export default function App() {
         {activeTab === 'pos' && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
             <div className="lg:col-span-8 space-y-4">
+              
+              {/* BOTÓN / BARRITA DE ORDENADOR DE VOZ */}
+              <div className="bg-violet-900 text-white p-4 rounded-3xl shadow-xl flex items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <button 
+                    onClick={toggleVoiceRecognition}
+                    className={`p-4 rounded-2xl transition-all flex items-center justify-center ${isListening ? 'bg-rose-500 animate-pulse text-white shadow-lg shadow-rose-500/50' : 'bg-white text-violet-900 hover:scale-105'}`}
+                  >
+                    {isListening ? <MicOff size={24} /> : <Mic size={24} />}
+                  </button>
+                  <div>
+                    <p className="text-xs font-black uppercase text-violet-300">Asistente de Voz Talo</p>
+                    <p className="text-sm font-bold">{voiceTranscript || 'Tocá el micrófono y decí: "Agregar 2 coca cola"'}</p>
+                  </div>
+                </div>
+                {isListening && <span className="bg-rose-500/20 text-rose-300 text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-widest animate-pulse">Escuchando...</span>}
+              </div>
+
               <div className="relative w-full">
                 <Search className="absolute left-4 top-3.5 text-slate-500" size={18} />
                 <input type="text" placeholder="Buscar producto por nombre..." className="w-full pl-12 pr-4 py-3.5 rounded-2xl border border-slate-200 bg-white font-bold outline-none focus:border-violet-600 shadow-sm" value={productSearchQuery} onChange={e => setProductSearchQuery(e.target.value)} />
@@ -573,7 +665,7 @@ export default function App() {
           </div>
         )}
 
-        {/* PESTAÑA INFORMES DE VENTAS (EXCLUSIVA DUEÑO/ADMIN) */}
+        {/* PESTAÑA INFORMES DE VENTAS */}
         {activeTab === 'reports' && isAdmin && (
           <div className="max-w-5xl mx-auto space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -636,7 +728,7 @@ export default function App() {
           </div>
         )}
 
-        {/* PESTAÑA MI EQUIPO (EXCLUSIVA DUEÑO/ADMIN CON CONTROL INTERRUPTOR ON/OFF) */}
+        {/* PESTAÑA MI EQUIPO */}
         {activeTab === 'team' && isAdmin && (
           <div className="max-w-4xl mx-auto space-y-4 pt-4">
             <div className="flex justify-between items-center mb-4">
@@ -665,7 +757,6 @@ export default function App() {
                     <p className="text-slate-400 font-bold text-xs">{member.email}</p>
                   </div>
 
-                  {/* INTERRUPTOR ON / OFF */}
                   <button 
                     onClick={() => toggleEmployeeStatus(member.id, member.activo)}
                     className={`px-4 py-2 rounded-2xl font-black text-xs flex items-center gap-2 transition-all ${member.activo ? 'bg-rose-50 text-rose-600 hover:bg-rose-100' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'}`}
@@ -688,7 +779,7 @@ export default function App() {
         )}
       </main>
 
-      {/* MODAL NUEVO PRODUCTO */}
+      {/* MODALES */}
       {isProductModalOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <form onSubmit={async (e) => {
@@ -719,7 +810,6 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL NUEVO VALE */}
       {isValeModalOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <form onSubmit={async (e) => {
@@ -769,7 +859,6 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL NUEVO CLIENTE */}
       {isCustomerModalOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <form onSubmit={async (e) => {
@@ -806,20 +895,17 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL NUEVO EMPLEADO */}
       {isTeamModalOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <form onSubmit={async (e) => {
             e.preventDefault();
             try {
-              // Instancia de Auth secundaria para no desloguear al dueño actual
               const tempApp = initializeApp(firebaseConfig, "SecondaryAuthApp");
               const tempAuth = getAuth(tempApp);
               
               const res = await createUserWithEmailAndPassword(tempAuth, teamForm.email.trim(), teamForm.password);
               const newUid = res.user.uid;
 
-              // Guardamos su perfil asociado a la empresaId del dueño logueado
               await setDoc(doc(db, 'users', newUid), {
                 name: teamForm.name.trim(),
                 email: teamForm.email.trim(),
@@ -846,7 +932,6 @@ export default function App() {
         </div>
       )}
 
-      {/* HISTORIAL Y TICKET VISTA */}
       {viewingCustomerHistory && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-white p-6 rounded-[40px] w-full max-w-md max-h-[85vh] flex flex-col shadow-2xl border border-slate-100">
@@ -908,4 +993,4 @@ export default function App() {
       )}
     </div>
   );
-} 
+}
